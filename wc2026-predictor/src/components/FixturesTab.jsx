@@ -1,19 +1,52 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect } from 'react'
+import { ref, onValue } from 'firebase/database'
+import { db } from '../lib/firebase'
 import { SCHEDULE, FLAGS, FIFA_RANKS, calcProbs, winVerdict, TODAY_KEY } from '../lib/schedule'
+import { matchKey as mkKey } from '../lib/data'
 
-function MatchCard({ game }) {
-  if (game.done) return (
+function getAllGamesFlat() {
+  const all = []
+  Object.entries(SCHEDULE).forEach(([dateStr, games]) => {
+    games.forEach(g => all.push({ ...g, dateStr }))
+  })
+  return all
+}
+
+function MatchCard({ game, liveResult }) {
+  // A match is "done" if it was hardcoded done OR admin confirmed a result in Firebase
+  const isDone = game.done || !!liveResult
+  const score = liveResult ? `${liveResult.score1}–${liveResult.score2}` : game.score
+
+  if (isDone) return (
     <div className="fixture-card">
       <div className="fixture-card-header">
-        <div><div className="fixture-group">Group {game.group}</div><div className="fixture-venue">{game.venue}</div></div>
-        <span style={{ fontSize: 10, background: 'rgba(201,168,76,.3)', color: '#c9a84c', padding: '3px 8px', borderRadius: 10, fontWeight: 700 }}>Full Time</span>
+        <div>
+          <div className="fixture-group">Group {game.group}</div>
+          <div className="fixture-venue">{game.venue}</div>
+        </div>
+        <span style={{ fontSize: 10, background: 'rgba(201,168,76,.3)', color: '#c9a84c', padding: '3px 8px', borderRadius: 10, fontWeight: 700 }}>
+          Full Time
+        </span>
       </div>
       <div className="fixture-body">
         <div className="fixture-teams">
-          <div className="fixture-team"><div className="fixture-flag">{FLAGS[game.t1]}</div><div className="fixture-name">{game.t1}</div></div>
-          <div className="fixture-score-display">{game.score}</div>
-          <div className="fixture-team"><div className="fixture-flag">{FLAGS[game.t2]}</div><div className="fixture-name">{game.t2}</div></div>
+          <div className="fixture-team">
+            <div className="fixture-flag">{FLAGS[game.t1]}</div>
+            <div className="fixture-name">{game.t1}</div>
+          </div>
+          <div className="fixture-score-display">{score}</div>
+          <div className="fixture-team">
+            <div className="fixture-flag">{FLAGS[game.t2]}</div>
+            <div className="fixture-name">{game.t2}</div>
+          </div>
         </div>
+        {liveResult && (
+          <div style={{ textAlign: 'center', marginTop: 6 }}>
+            <span style={{ fontSize: 11, fontWeight: 700, color: '#1a6b3c', background: '#e6f5e9', padding: '2px 10px', borderRadius: 10 }}>
+              {liveResult.winner === 'Draw' ? 'Draw' : `${liveResult.winner} win`}
+            </span>
+          </div>
+        )}
       </div>
     </div>
   )
@@ -28,7 +61,10 @@ function MatchCard({ game }) {
   return (
     <div className="fixture-card">
       <div className="fixture-card-header">
-        <div><div className="fixture-group">Group {game.group}</div><div className="fixture-venue">{game.venue}</div></div>
+        <div>
+          <div className="fixture-group">Group {game.group}</div>
+          <div className="fixture-venue">{game.venue}</div>
+        </div>
         <div style={{ textAlign: 'right' }}>
           <div className="fixture-time">🕐 {game.time}</div>
         </div>
@@ -66,14 +102,31 @@ function MatchCard({ game }) {
 export default function FixturesTab() {
   const days = Object.keys(SCHEDULE)
   const [selectedDay, setSelectedDay] = useState(TODAY_KEY)
+  const [results, setResults] = useState({})
+  const [lastUpdated, setLastUpdated] = useState(null)
+
+  // Live Firebase listener — updates instantly when admin confirms a result
+  useEffect(() => {
+    const unsub = onValue(ref(db, 'results'), snap => {
+      setResults(snap.exists() ? snap.val() : {})
+      setLastUpdated(new Date())
+    })
+    return () => unsub()
+  }, [])
 
   const games = SCHEDULE[selectedDay] || []
 
   return (
     <div>
       <div style={{ padding: '14px 0 4px' }}>
-        <div style={{ fontSize: 20, fontWeight: 800, color: '#fff', marginBottom: 12, textShadow: '0 1px 4px rgba(0,0,0,.4)' }}>
-          📅 Fixtures & Odds
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+          <div style={{ fontSize: 20, fontWeight: 800, color: '#fff', textShadow: '0 1px 4px rgba(0,0,0,.4)' }}>
+            📅 Fixtures & Odds
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 10, color: 'rgba(255,255,255,.4)' }}>
+            <div style={{ width: 6, height: 6, borderRadius: '50%', background: '#2ecc71', animation: 'pulse 1.5s infinite' }} />
+            {lastUpdated ? `Updated ${lastUpdated.toLocaleTimeString()}` : 'Connecting…'}
+          </div>
         </div>
       </div>
 
@@ -82,7 +135,11 @@ export default function FixturesTab() {
           const isToday = d === TODAY_KEY
           const isSel = d === selectedDay
           return (
-            <button key={d} className={`day-tab ${isSel ? 'active' : ''} ${isToday && !isSel ? 'today' : ''}`} onClick={() => setSelectedDay(d)}>
+            <button
+              key={d}
+              className={`day-tab ${isSel ? 'active' : ''} ${isToday && !isSel ? 'today' : ''}`}
+              onClick={() => setSelectedDay(d)}
+            >
               {d}{isToday ? ' · Today' : ''}
             </button>
           )
@@ -90,7 +147,9 @@ export default function FixturesTab() {
       </div>
 
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
-        <span style={{ fontSize: 13, color: 'rgba(255,255,255,.6)', fontWeight: 500 }}>{games.length} match{games.length !== 1 ? 'es' : ''}</span>
+        <span style={{ fontSize: 13, color: 'rgba(255,255,255,.6)', fontWeight: 500 }}>
+          {games.length} match{games.length !== 1 ? 'es' : ''}
+        </span>
         <span style={{ fontSize: 11, color: 'rgba(255,255,255,.4)' }}>Odds based on FIFA rankings</span>
       </div>
 
@@ -99,7 +158,11 @@ export default function FixturesTab() {
             <div style={{ fontSize: 36, marginBottom: 8 }}>📅</div>
             <div style={{ fontSize: 13 }}>No matches scheduled.</div>
           </div>
-        : games.map((g, i) => <MatchCard key={i} game={g} />)
+        : games.map((g, i) => {
+            const key = mkKey({ ...g, group: g.group })
+            const liveResult = results[key] || null
+            return <MatchCard key={i} game={g} liveResult={liveResult} />
+          })
       }
     </div>
   )
